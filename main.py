@@ -13,7 +13,10 @@ Usage
 
 import asyncio
 import logging
+import os
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telegram.ext import Application, MessageHandler, filters
 
@@ -22,6 +25,32 @@ from config import load_config
 from sheets.client import SheetLogger
 
 logger = logging.getLogger(__name__)
+
+# Render requires a Web Service to have an open port.
+# This tiny HTTP server keeps Render happy while PTB polls.
+_HEALTH_PORT = int(os.environ.get("PORT", "8080"))
+
+
+class _HealthHandler(BaseHTTPRequestHandler):
+    """Minimal health-check endpoint — responds 200 to anything."""
+
+    def do_GET(self) -> None:  # noqa: N802 — required by http.server
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    # Suppress default logging (noisy)
+    def log_message(self, fmt, *args) -> None:
+        pass
+
+
+def _start_health_server() -> None:
+    """Start a trivial HTTP server in a daemon thread for Render health checks."""
+
+    server = HTTPServer(("0.0.0.0", _HEALTH_PORT), _HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    logger.info("Health server listening on port %d", _HEALTH_PORT)
 
 
 def _setup_logging(level: str) -> None:
@@ -48,6 +77,9 @@ def main() -> None:
     except Exception as exc:
         logger.critical("Failed to connect Google Sheets: %s", exc)
         sys.exit(1)
+
+    # --- Health server (Render Web Service requirement) ---
+    _start_health_server()
 
     # --- Telegram Bot ---
     app = Application.builder().token(config.telegram_token).build()
