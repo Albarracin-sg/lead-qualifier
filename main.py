@@ -53,6 +53,35 @@ def _start_health_server() -> None:
     logger.info("Health server listening on port %d", _HEALTH_PORT)
 
 
+def _start_keep_alive() -> None:
+    """Ping Render URL every 10 min to prevent free-tier idle sleep.
+
+    Render free services spin down after 15 min without inbound traffic.
+    PTB polling is outbound so it doesn't count — this keeps the service awake.
+    """
+
+    url = os.environ.get(
+        "RENDER_EXTERNAL_URL",
+        "https://lead-qualifier-ue0n.onrender.com/",
+    )
+
+    def _ping() -> None:
+        import time
+
+        import httpx  # already a dependency (used by PTB)
+
+        while True:
+            time.sleep(600)
+            try:
+                httpx.get(url, timeout=10)
+            except Exception:
+                pass  # next cycle will retry
+
+    thread = threading.Thread(target=_ping, daemon=True)
+    thread.start()
+    logger.info("Keep-alive will ping %s every 10 min", url)
+
+
 def _setup_logging(level: str) -> None:
     logging.basicConfig(
         level=getattr(logging, level, logging.INFO),
@@ -80,6 +109,7 @@ def main() -> None:
 
     # --- Health server (Render Web Service requirement) ---
     _start_health_server()
+    _start_keep_alive()
 
     # --- Telegram Bot ---
     app = Application.builder().token(config.telegram_token).build()
