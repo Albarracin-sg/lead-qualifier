@@ -1,0 +1,12 @@
+# Bot
+python-telegram-bot>=21.0,<22.0
+
+# Hugging Face Inference API
+requests>=2.31.0
+
+# Google Sheets
+gspread>=6.0,<7.0
+google-auth>=2.0,<3.0
+
+# Config
+python-dotenv>=1.0,<2.0
