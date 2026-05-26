@@ -29,10 +29,9 @@ logger = logging.getLogger(__name__)
 # If polling doesn't establish within this many seconds, assume there's
 # another instance holding the connection.  The process exits so Render
 # can restart fresh (old instance will be gone by then).
-_POLLING_GRACE_PERIOD_S = int(os.environ.get("POLLING_GRACE_PERIOD", "60"))
+_POLLING_GRACE_PERIOD_S = int(os.environ.get("POLLING_GRACE_PERIOD", "120"))
 
-# Shared timer reference for the watchdog.  Set before polling starts,
-# cleared from the first successful getUpdates response.
+# Shared timer reference for the watchdog.
 _watchdog_timer: threading.Timer | None = None
 
 
@@ -79,37 +78,33 @@ def _arm_watchdog() -> None:
     if hasattr(signal, "SIGALRM"):
         signal.signal(signal.SIGALRM, _alarm_handler)
         signal.alarm(_POLLING_GRACE_PERIOD_S)
-        _watchdog_timer = None  # signal-based, no Timer object
+        _watchdog_timer = None
         logger.info(
-            "Watchdog armed: SIGALRM in %ds if polling not connected.",
+            "Watchdog armed: SIGALRM in %ds.",
             _POLLING_GRACE_PERIOD_S,
         )
     else:
         _watchdog_timer = threading.Timer(_POLLING_GRACE_PERIOD_S, _watchdog_die)
         _watchdog_timer.daemon = True
         _watchdog_timer.start()
-        logger.info(
-            "Watchdog armed: timer in %ds if polling not connected.",
-            _POLLING_GRACE_PERIOD_S,
-        )
+        logger.info("Watchdog armed: timer in %ds.", _POLLING_GRACE_PERIOD_S)
 
 
-class _WatchdogRequest:
-    """Wraps PTB's default request to disarm watchdog on first success."""
+def _patch_get_updates(bot) -> None:
+    """Monkey-patch ``get_updates`` to disarm watchdog on first success.
 
-    def __init__(self, inner) -> None:
-        self._inner = inner
-        self._disarmed = False
+    PTB 21.x's ``ApplicationBuilder`` ignores the ``request`` parameter,
+    so wrapping ``HTTPXRequest`` has no effect.  Instead we patch the
+    actual method that gets called during polling.
+    """
+    original = bot.get_updates
 
-    async def post(self, url: str, *args, **kwargs):
-        result = await self._inner.post(url, *args, **kwargs)
-        if not self._disarmed and "getUpdates" in url:
-            self._disarmed = True
-            _disarm_watchdog()
+    async def patched(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        _disarm_watchdog()
         return result
 
-    def __getattr__(self, name):
-        return getattr(self._inner, name)
+    bot.get_updates = patched
 
 
 def main() -> None:
@@ -129,24 +124,17 @@ def main() -> None:
         sys.exit(1)
 
     # --- Telegram Bot ---
-    from telegram.request import HTTPXRequest
-
-    # Custom request that disarms the watchdog on first successful getUpdates
-    inner = HTTPXRequest(
-        connection_pool_size=1,
-        read_timeout=30.0,
-        write_timeout=30.0,
-    )
-    watchdog_req = _WatchdogRequest(inner)
-
-    app = Application.builder().token(config.telegram_token).request(watchdog_req).build()
+    app = Application.builder().token(config.telegram_token).build()
 
     app.bot_data["config"] = config
     app.bot_data["sheet"] = sheet
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Arm watchdog — will be disarmed by _WatchdogRequest on first getUpdates
+    # Patch get_updates BEFORE starting polling
+    _patch_get_updates(app.bot)
+
+    # Arm watchdog — disarmed by _patch_get_updates on first success
     _arm_watchdog()
 
     # Python 3.14+ needs explicit event loop
