@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # If polling doesn't establish within this many seconds, assume there's
 # another instance holding the connection.  The process exits so Render
 # can restart fresh (old instance will be gone by then).
-_POLLING_GRACE_PERIOD_S = int(os.environ.get("POLLING_GRACE_PERIOD", "45"))
+_POLLING_GRACE_PERIOD_S = int(os.environ.get("POLLING_GRACE_PERIOD", "60"))
 
 
 def _setup_logging(level: str) -> None:
