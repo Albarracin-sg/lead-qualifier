@@ -13,8 +13,10 @@ Usage
 
 import asyncio
 import logging
+import os
+import signal
 import sys
-import time
+import threading
 
 from telegram.ext import Application, MessageHandler, filters
 
@@ -24,10 +26,10 @@ from sheets.client import SheetLogger
 
 logger = logging.getLogger(__name__)
 
-# How long to wait between retries when the same bot token is being
-# polled by another instance (e.g. during a rolling deploy on Render).
-_CONFLICT_RETRY_DELAY_S = 15
-_MAX_CONFLICT_RETRIES = 10
+# If polling doesn't establish within this many seconds, assume there's
+# another instance holding the connection.  The process exits so Render
+# can restart fresh (old instance will be gone by then).
+_POLLING_GRACE_PERIOD_S = int(os.environ.get("POLLING_GRACE_PERIOD", "45"))
 
 
 def _setup_logging(level: str) -> None:
@@ -39,34 +41,65 @@ def _setup_logging(level: str) -> None:
     )
 
 
-def _run_with_conflict_retry(app: Application, config) -> None:
-    """Run polling, retrying if another instance holds the lock.
+def _start_watchdog() -> threading.Timer:
+    """Start a timer that force-exits the process if polling never connects.
 
-    Render starts the new deployment *before* stopping the old one, so
-    two processes race for the same Telegram long-poll connection.  This
-    loop catches ``Conflict`` (HTTP 409), waits for the old instance to
-    die, and retries.
+    PTB's ``network_retry_loop`` handles ``Conflict`` (409) internally and
+    never propagates it to ``run_polling``.  When two Render instances race
+    for the same bot token, the new one must wait for the old one to die —
+    but without health-check being able to succeed, the old one is never
+    killed.
+
+    This watchdog acts as a circuit-breaker: if the application doesn't
+    reach the polling loop after *grace_period* seconds, we exit hard so
+    Render restarts us in a clean state.
     """
-    from telegram.error import Conflict
+    signal_enabled = hasattr(signal, "SIGALRM")
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    if signal_enabled:
+        # Use SIGALRM on Unix — interrupts the main thread directly.
+        def _alarm_handler(_signum, _frame) -> None:
+            logger.error(
+                "Polling failed to establish within %ds (another instance?). "
+                "Exiting so Render can restart.",
+                _POLLING_GRACE_PERIOD_S,
+            )
+            sys.exit(1)
 
-    for attempt in range(1, _MAX_CONFLICT_RETRIES + 1):
-        try:
-            logger.info("Starting polling (attempt %d/%d)…", attempt, _MAX_CONFLICT_RETRIES)
-            app.run_polling(allowed_updates=["messages"])
-            return  # normal exit — polling never returns on its own
-        except Conflict:
-            msg = "Conflict: another bot instance is running. Retrying in %d s (attempt %d/%d)…"
-            logger.warning(msg, _CONFLICT_RETRY_DELAY_S, attempt, _MAX_CONFLICT_RETRIES)
-            # run_polling closes the old loop when it exits, so create a fresh one
-            loop.close()
-            time.sleep(_CONFLICT_RETRY_DELAY_S)
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        finally:
-            loop.close()
+        signal.signal(signal.SIGALRM, _alarm_handler)
+        signal.alarm(_POLLING_GRACE_PERIOD_S)
+        logger.info(
+            "Watchdog armed: SIGALRM in %ds if polling not connected.",
+            _POLLING_GRACE_PERIOD_S,
+        )
+        return None  # no timer needed — signal handles it
+    else:
+        # Fallback — Timer thread on Windows (no SIGALRM).
+        def _die() -> None:
+            logger.error(
+                "Polling failed to establish within %ds. Exiting.",
+                _POLLING_GRACE_PERIOD_S,
+            )
+            os._exit(1)
+
+        timer = threading.Timer(_POLLING_GRACE_PERIOD_S, _die)
+        timer.daemon = True
+        timer.start()
+        logger.info(
+            "Watchdog armed: timer in %ds if polling not connected.",
+            _POLLING_GRACE_PERIOD_S,
+        )
+        return timer
+
+
+def _disarm_watchdog(timer: threading.Timer | None) -> None:
+    """Disarm the watchdog — called once polling has connected."""
+    if timer is not None:
+        timer.cancel()
+        logger.info("Watchdog disarmed — polling connected.")
+    elif hasattr(signal, "SIGALRM"):
+        signal.alarm(0)
+        logger.info("Watchdog disarmed — polling connected.")
 
 
 def main() -> None:
@@ -88,14 +121,24 @@ def main() -> None:
     # --- Telegram Bot ---
     app = Application.builder().token(config.telegram_token).build()
 
-    # Store shared state in bot_data
     app.bot_data["config"] = config
     app.bot_data["sheet"] = sheet
 
-    # Register handler for text messages
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    _run_with_conflict_retry(app, config)
+    # Arm watchdog BEFORE starting polling
+    timer = _start_watchdog()
+
+    # Python 3.14+ needs explicit event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    logger.info("Starting polling (watchdog armed for %ds)…", _POLLING_GRACE_PERIOD_S)
+    try:
+        app.run_polling(allowed_updates=["messages"])
+    finally:
+        _disarm_watchdog(timer)
+        loop.close()
 
 
 if __name__ == "__main__":
