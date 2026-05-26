@@ -104,7 +104,9 @@ def _patch_get_updates(bot) -> None:
         _disarm_watchdog()
         return result
 
-    bot.get_updates = patched
+    # PTB's _TelegramObject.__setattr__ blocks method assignment,
+    # bypass via object.__setattr__.
+    object.__setattr__(bot, "get_updates", patched)
 
 
 def main() -> None:
