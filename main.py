@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 # can restart fresh (old instance will be gone by then).
 _POLLING_GRACE_PERIOD_S = int(os.environ.get("POLLING_GRACE_PERIOD", "60"))
 
+# Shared timer reference for the watchdog.  Set before polling starts,
+# cleared from the first successful getUpdates response.
+_watchdog_timer: threading.Timer | None = None
+
 
 def _setup_logging(level: str) -> None:
     logging.basicConfig(
@@ -41,65 +45,71 @@ def _setup_logging(level: str) -> None:
     )
 
 
-def _start_watchdog() -> threading.Timer:
-    """Start a timer that force-exits the process if polling never connects.
-
-    PTB's ``network_retry_loop`` handles ``Conflict`` (409) internally and
-    never propagates it to ``run_polling``.  When two Render instances race
-    for the same bot token, the new one must wait for the old one to die —
-    but without health-check being able to succeed, the old one is never
-    killed.
-
-    This watchdog acts as a circuit-breaker: if the application doesn't
-    reach the polling loop after *grace_period* seconds, we exit hard so
-    Render restarts us in a clean state.
-    """
-    signal_enabled = hasattr(signal, "SIGALRM")
-
-    if signal_enabled:
-        # Use SIGALRM on Unix — interrupts the main thread directly.
-        def _alarm_handler(_signum, _frame) -> None:
-            logger.error(
-                "Polling failed to establish within %ds (another instance?). "
-                "Exiting so Render can restart.",
-                _POLLING_GRACE_PERIOD_S,
-            )
-            sys.exit(1)
-
-        signal.signal(signal.SIGALRM, _alarm_handler)
-        signal.alarm(_POLLING_GRACE_PERIOD_S)
-        logger.info(
-            "Watchdog armed: SIGALRM in %ds if polling not connected.",
-            _POLLING_GRACE_PERIOD_S,
-        )
-        return None  # no timer needed — signal handles it
-    else:
-        # Fallback — Timer thread on Windows (no SIGALRM).
-        def _die() -> None:
-            logger.error(
-                "Polling failed to establish within %ds. Exiting.",
-                _POLLING_GRACE_PERIOD_S,
-            )
-            os._exit(1)
-
-        timer = threading.Timer(_POLLING_GRACE_PERIOD_S, _die)
-        timer.daemon = True
-        timer.start()
-        logger.info(
-            "Watchdog armed: timer in %ds if polling not connected.",
-            _POLLING_GRACE_PERIOD_S,
-        )
-        return timer
-
-
-def _disarm_watchdog(timer: threading.Timer | None) -> None:
-    """Disarm the watchdog — called once polling has connected."""
-    if timer is not None:
-        timer.cancel()
+def _disarm_watchdog() -> None:
+    """Disarm the watchdog timer."""
+    global _watchdog_timer
+    if _watchdog_timer is not None:
+        _watchdog_timer.cancel()
+        _watchdog_timer = None
         logger.info("Watchdog disarmed — polling connected.")
     elif hasattr(signal, "SIGALRM"):
         signal.alarm(0)
         logger.info("Watchdog disarmed — polling connected.")
+
+
+def _alarm_handler(_signum, _frame) -> None:
+    logger.error(
+        "Polling failed within %ds (conflict?). Exiting for Render restart.",
+        _POLLING_GRACE_PERIOD_S,
+    )
+    sys.exit(1)
+
+
+def _watchdog_die() -> None:
+    logger.error(
+        "Polling failed within %ds. Exiting for Render restart.",
+        _POLLING_GRACE_PERIOD_S,
+    )
+    os._exit(1)
+
+
+def _arm_watchdog() -> None:
+    """Arm the watchdog — fires if ``getUpdates`` never succeeds."""
+    global _watchdog_timer
+    if hasattr(signal, "SIGALRM"):
+        signal.signal(signal.SIGALRM, _alarm_handler)
+        signal.alarm(_POLLING_GRACE_PERIOD_S)
+        _watchdog_timer = None  # signal-based, no Timer object
+        logger.info(
+            "Watchdog armed: SIGALRM in %ds if polling not connected.",
+            _POLLING_GRACE_PERIOD_S,
+        )
+    else:
+        _watchdog_timer = threading.Timer(_POLLING_GRACE_PERIOD_S, _watchdog_die)
+        _watchdog_timer.daemon = True
+        _watchdog_timer.start()
+        logger.info(
+            "Watchdog armed: timer in %ds if polling not connected.",
+            _POLLING_GRACE_PERIOD_S,
+        )
+
+
+class _WatchdogRequest:
+    """Wraps PTB's default request to disarm watchdog on first success."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self._disarmed = False
+
+    async def post(self, url: str, *args, **kwargs):
+        result = await self._inner.post(url, *args, **kwargs)
+        if not self._disarmed and "getUpdates" in url:
+            self._disarmed = True
+            _disarm_watchdog()
+        return result
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
 
 
 def main() -> None:
@@ -119,25 +129,35 @@ def main() -> None:
         sys.exit(1)
 
     # --- Telegram Bot ---
-    app = Application.builder().token(config.telegram_token).build()
+    from telegram.request import HTTPXRequest
+
+    # Custom request that disarms the watchdog on first successful getUpdates
+    inner = HTTPXRequest(
+        connection_pool_size=1,
+        read_timeout=30.0,
+        write_timeout=30.0,
+    )
+    watchdog_req = _WatchdogRequest(inner)
+
+    app = Application.builder().token(config.telegram_token).request(watchdog_req).build()
 
     app.bot_data["config"] = config
     app.bot_data["sheet"] = sheet
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Arm watchdog BEFORE starting polling
-    timer = _start_watchdog()
+    # Arm watchdog — will be disarmed by _WatchdogRequest on first getUpdates
+    _arm_watchdog()
 
     # Python 3.14+ needs explicit event loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    logger.info("Starting polling (watchdog armed for %ds)…", _POLLING_GRACE_PERIOD_S)
+    logger.info("Starting polling…")
     try:
         app.run_polling(allowed_updates=["messages"])
     finally:
-        _disarm_watchdog(timer)
+        _disarm_watchdog()
         loop.close()
 
 
