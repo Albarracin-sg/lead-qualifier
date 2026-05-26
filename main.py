@@ -59,12 +59,27 @@ def main() -> None:
     # Register handler for text messages
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("Bot started. Send a message on Telegram to test.")
     # Python 3.14+ doesn't auto-create event loops. PTB's run_polling
     # calls get_event_loop() internally, so we create one explicitly.
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+
+    # Retry on Conflict (409) — two instances can't poll the same token.
+    # Render starts new instance before killing old one.
+    from telegram.error import Conflict
+
+    # Handle errors at application level instead of crashing
+    async def error_handler(update, context):
+        if isinstance(context.error, Conflict):
+            logger.warning("Conflict detected (another bot instance running). Retrying in 15s…")
+            await asyncio.sleep(15)
+            return  # application retries internally
+        logger.exception("Unhandled error: %s", context.error)
+
+    app.add_error_handler(error_handler)
+
     try:
+        logger.info("Bot started. Send a message on Telegram to test.")
         app.run_polling(allowed_updates=["messages"])
     finally:
         loop.close()
