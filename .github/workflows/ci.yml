@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Verify imports
+        run: |
+          python -c "
+          from config import Config
+          from models.lead import LeadResult
+          from qualifier.prompt import build_messages, SYSTEM_PROMPT
+          from qualifier.client import _extract_json, QualifierError, qualify_lead
+          from bot.handler import _build_reply
+          from sheets.client import SheetLogger, SheetLogError
+          print('All imports OK')
+          print(f'Prompt: {len(SYSTEM_PROMPT)} chars')
+
+          # Test model
+          import json
+          r = LeadResult.from_llm_response(
+              'test lead',
+              json.loads('{\"accion\": \"qualified\", \"razonamiento\": \"test\"}'),
+              prompt_tokens=100, completion_tokens=50,
+          )
+          row = r.to_sheet_row()
+          assert len(row) == 9, f'Expected 9 cols, got {len(row)}'
+          print(f'Model OK: {len(row)} columns, action={r.action}')
+          print('CI check passed')
+          "
+
+      - name: Verify structure
+        run: |
+          for f in main.py config.py models/lead.py qualifier/prompt.py \
+                     qualifier/client.py bot/handler.py sheets/client.py; do
+            test -f "$f" && echo "✓ $f" || (echo "✗ $f missing" && exit 1)
+          done
