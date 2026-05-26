@@ -13,7 +13,7 @@ from telegram.ext import ContextTypes
 from config import Config
 from models.lead import LeadResult
 from qualifier.client import QualifierError, qualify_lead
-from sheets.client import SheetLogger, SheetLogError
+from sheets.client import SheetLogError, SheetLogger
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         logger.info(
             "Chat %d conv=%s: action=%s",
-            chat_id, conv_id, result.action,
+            chat_id,
+            conv_id,
+            result.action,
         )
 
         reply = _build_reply(result)
@@ -108,6 +110,4 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
     except Exception:
         logger.exception("Unexpected error")
-        await processing_msg.edit_text(
-            "Paso algo inesperado, proba de nuevo en un rato!"
-        )
+        await processing_msg.edit_text("Paso algo inesperado, proba de nuevo en un rato!")

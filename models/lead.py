@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 @dataclass
@@ -17,7 +17,7 @@ class LeadResult:
     conversation_id: str = ""
     prompt_tokens: int = 0
     completion_tokens: int = 0
-    timestamp: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(tz=UTC))
 
     def to_sheet_row(self) -> list[str]:
         action_label = {

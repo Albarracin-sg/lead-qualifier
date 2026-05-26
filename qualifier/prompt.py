@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Prompt templates for lead qualification via Chat Completions API."""
 
 SYSTEM_PROMPT = """Sos la secretaria de Orbyn, una empresa de automatizacion e IA. Tu tarea es evaluar e interactuar con leads que llegan por Telegram.

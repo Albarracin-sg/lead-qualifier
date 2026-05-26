@@ -74,12 +74,15 @@ class SheetLogger:
     def _apply_formatting(self, ws) -> None:
         try:
             last_col = chr(ord("A") + _DATA_COLS - 1)
-            ws.format(f"A1:{last_col}1", {
-                "textFormat": {"bold": True},
-                "backgroundColorStyle": {
-                    "rgbColor": {"red": 0.95, "green": 0.95, "blue": 0.95}
+            ws.format(
+                f"A1:{last_col}1",
+                {
+                    "textFormat": {"bold": True},
+                    "backgroundColorStyle": {
+                        "rgbColor": {"red": 0.95, "green": 0.95, "blue": 0.95}
+                    },
                 },
-            })
+            )
             ws.format("B:B", {"wrapStrategy": "WRAP"})
             ws.format("D:D", {"wrapStrategy": "WRAP"})
         except Exception as exc:
@@ -114,8 +117,11 @@ class SheetLogger:
             self._set_total_formula(row)
             logger.info(
                 "Row %d: %s | conv=%s | in=%d out=%d",
-                row, result.action, result.conversation_id,
-                result.prompt_tokens, result.completion_tokens,
+                row,
+                result.action,
+                result.conversation_id,
+                result.prompt_tokens,
+                result.completion_tokens,
             )
             return row
         except Exception as exc:

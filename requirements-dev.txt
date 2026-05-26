@@ -1,0 +1,4 @@
+# Development + CI tools
+pre-commit>=4.0
+ruff>=0.11.0
+mypy>=1.10

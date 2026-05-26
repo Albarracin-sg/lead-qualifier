@@ -59,7 +59,9 @@ def qualify_lead(
         try:
             logger.info("HF API call (attempt %d/%d)", attempt, config.hf_retries)
             resp = requests.post(
-                config.hf_api_url, headers=headers, json=payload,
+                config.hf_api_url,
+                headers=headers,
+                json=payload,
                 timeout=config.hf_timeout,
             )
             resp.raise_for_status()
@@ -82,8 +84,10 @@ def qualify_lead(
             logger.debug("LLM raw: %s", raw_text[:300])
             parsed = _extract_json(raw_text)
             return LeadResult.from_llm_response(
-                raw_input, parsed,
-                prompt_tokens=pt, completion_tokens=ct,
+                raw_input,
+                parsed,
+                prompt_tokens=pt,
+                completion_tokens=ct,
             )
 
         except requests.Timeout:

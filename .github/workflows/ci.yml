@@ -23,7 +23,15 @@ jobs:
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install ruff
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Format check
+        run: ruff format --check .
 
       - name: Verify imports
         run: |
@@ -37,7 +45,6 @@ jobs:
           print('All imports OK')
           print(f'Prompt: {len(SYSTEM_PROMPT)} chars')
 
-          # Test model
           import json
           r = LeadResult.from_llm_response(
               'test lead',

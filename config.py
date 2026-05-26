@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
-
 load_dotenv()
 
 
@@ -20,9 +19,7 @@ class Config:
     # --- Hugging Face (Chat Completions API) ---
     hf_api_key: str
     hf_model: str = field(default="deepseek-ai/DeepSeek-V3.2:novita")
-    hf_api_url: str = field(
-        default="https://router.huggingface.co/v1/chat/completions"
-    )
+    hf_api_url: str = field(default="https://router.huggingface.co/v1/chat/completions")
 
     # --- Google Sheets ---
     google_creds_json: dict = field(default_factory=dict)
