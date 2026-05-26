@@ -14,6 +14,7 @@ Usage
 import asyncio
 import logging
 import sys
+import time
 
 from telegram.ext import Application, MessageHandler, filters
 
@@ -23,6 +24,11 @@ from sheets.client import SheetLogger
 
 logger = logging.getLogger(__name__)
 
+# How long to wait between retries when the same bot token is being
+# polled by another instance (e.g. during a rolling deploy on Render).
+_CONFLICT_RETRY_DELAY_S = 15
+_MAX_CONFLICT_RETRIES = 10
+
 
 def _setup_logging(level: str) -> None:
     logging.basicConfig(
@@ -31,6 +37,36 @@ def _setup_logging(level: str) -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
         stream=sys.stdout,
     )
+
+
+def _run_with_conflict_retry(app: Application, config) -> None:
+    """Run polling, retrying if another instance holds the lock.
+
+    Render starts the new deployment *before* stopping the old one, so
+    two processes race for the same Telegram long-poll connection.  This
+    loop catches ``Conflict`` (HTTP 409), waits for the old instance to
+    die, and retries.
+    """
+    from telegram.error import Conflict
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    for attempt in range(1, _MAX_CONFLICT_RETRIES + 1):
+        try:
+            logger.info("Starting polling (attempt %d/%d)…", attempt, _MAX_CONFLICT_RETRIES)
+            app.run_polling(allowed_updates=["messages"])
+            return  # normal exit — polling never returns on its own
+        except Conflict:
+            msg = "Conflict: another bot instance is running. Retrying in %d s (attempt %d/%d)…"
+            logger.warning(msg, _CONFLICT_RETRY_DELAY_S, attempt, _MAX_CONFLICT_RETRIES)
+            # run_polling closes the old loop when it exits, so create a fresh one
+            loop.close()
+            time.sleep(_CONFLICT_RETRY_DELAY_S)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        finally:
+            loop.close()
 
 
 def main() -> None:
@@ -59,30 +95,7 @@ def main() -> None:
     # Register handler for text messages
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Python 3.14+ doesn't auto-create event loops. PTB's run_polling
-    # calls get_event_loop() internally, so we create one explicitly.
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    # Retry on Conflict (409) — two instances can't poll the same token.
-    # Render starts new instance before killing old one.
-    from telegram.error import Conflict
-
-    # Handle errors at application level instead of crashing
-    async def error_handler(update, context):
-        if isinstance(context.error, Conflict):
-            logger.warning("Conflict detected (another bot instance running). Retrying in 15s…")
-            await asyncio.sleep(15)
-            return  # application retries internally
-        logger.exception("Unhandled error: %s", context.error)
-
-    app.add_error_handler(error_handler)
-
-    try:
-        logger.info("Bot started. Send a message on Telegram to test.")
-        app.run_polling(allowed_updates=["messages"])
-    finally:
-        loop.close()
+    _run_with_conflict_retry(app, config)
 
 
 if __name__ == "__main__":
