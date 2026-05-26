@@ -4,6 +4,9 @@ Bot de Telegram para cualificacion de leads usando LLMs de Hugging Face. Actua c
 
 Proyecto tecnico para **Orbyn** — empresa de automatizacion e IA.
 
+- **Bot**: [@Orbyn_secretaria_bot](https://t.me/Orbyn_secretaria_bot)
+- **Sheet**: [Lead Qualification Log](https://docs.google.com/spreadsheets/d/1f0TDPm9FjUvp68mo8-5UZXk32Gg7Er0lieVcBHNjNjQ/edit?usp=sharing) (lectura)
+
 ## Arquitectura
 
 ```mermaid
